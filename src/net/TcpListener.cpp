@@ -4,9 +4,10 @@
 #include <sys/socket.h>
 #include <cstring>
 
+
 bool TcpListener::listenOn(uint16_t port, int backlog) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd <= 0) return false;
 
     int yes = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
