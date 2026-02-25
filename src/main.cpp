@@ -1,3 +1,8 @@
+/*
+A multithreaded HTTP/1.1 server implemented from scratch in modern C++
+using POSIX sockets and a bounded thread pool.
+Devang Banda
+*/ 
 #include <atomic>
 #include <csignal>
 #include <cstring>
