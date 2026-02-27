@@ -1,8 +1,10 @@
 /*
 A multithreaded HTTP/1.1 server implemented from scratch in modern C++
 using POSIX sockets and a bounded thread pool.
+
 Devang Banda
-*/ 
+*/
+
 #include <atomic>
 #include <csignal>
 #include <cstring>
@@ -16,7 +18,7 @@ Devang Banda
 #include "net/TcpListener.h"
 #include "http/HttpParser.h"
 #include "http/Router.h"
-using namespace std;
+
 static std::atomic<bool> g_stop{false};
 
 static void onSigint(int) {
@@ -42,17 +44,20 @@ static bool readHttpHeaders(int fd, std::string& out) {
 static void writeAll(int fd, const std::string& data) {
     const char* p = data.data();
     size_t left = data.size();
+
     while (left > 0) {
         ssize_t n = ::send(fd, p, left, 0);
         if (n <= 0) return;
+
         p += n;
-        left -= (size_t)n;
+        left -= static_cast<size_t>(n);
     }
 }
 
 int main() {
     std::signal(SIGINT, onSigint);
 
+    // -------- Setup Router --------
     auto router = std::make_shared<Router>();
 
     router->get("/health", [](const HttpRequest&) {
@@ -69,42 +74,58 @@ int main() {
         return r;
     });
 
+    // -------- Setup Listener --------
     TcpListener listener;
     if (!listener.listenOn(8080)) {
         std::cerr << "Failed to listen on 8080\n";
         return 1;
     }
 
+    // -------- Setup Thread Pool --------
     ThreadPool pool(8, 1024);
 
     std::cout << "Listening on http://localhost:8080 (Ctrl+C to stop)\n";
 
+    // -------- Accept Loop --------
     while (!g_stop.load()) {
+
         Socket client = listener.acceptOne();
         if (!client.valid()) {
             if (g_stop.load()) break;
             continue;
         }
 
-        // Move socket into shared_ptr so lambda is copyable
-        auto sockPtr = std::make_shared<Socket>(std::move(client));
+        int cfd = client.fd();
 
-        pool.submit([sockPtr, router]() {
-            Socket& s = *sockPtr;
+        bool submitted = pool.submit([cfd, router]() {
+
+            // RAII ownership transferred to worker thread
+            Socket s{cfd};
 
             std::string raw;
-            if (!readHttpHeaders(s.fd(), raw)) return;
+            if (!readHttpHeaders(s.fd(), raw))
+                return;
 
             HttpRequest req;
-            if (!HttpParser::parseRequest(raw, req)) return;
+            if (!HttpParser::parseRequest(raw, req))
+                return;
 
             HttpResponse resp = router->route(req);
             resp.headers["Connection"] = "close";
 
             writeAll(s.fd(), resp.toString());
         });
+
+        if (!submitted) {
+            // Queue full or shutting down — prevent fd leak
+            ::close(cfd);
+        } else {
+            // Transfer ownership to worker
+            client.reset(-1);
+        }
     }
 
+    // -------- Shutdown --------
     listener.close();
     pool.shutdown();
 
