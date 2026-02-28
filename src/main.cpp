@@ -19,6 +19,8 @@ Devang Banda
 #include "http/HttpParser.h"
 #include "http/Router.h"
 
+#include <sys/time.h>
+
 static std::atomic<bool> g_stop{false};
 
 static void onSigint(int) {
@@ -52,6 +54,18 @@ static void writeAll(int fd, const std::string& data) {
         p += n;
         left -= static_cast<size_t>(n);
     }
+}
+
+//Timeout Function 
+static void setSocketTimeouts(int fd, int seconds) {
+    timeval tv{};
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+
+    // Receive timeout
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    // Send timeout
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
 int main() {
@@ -97,24 +111,21 @@ int main() {
 
         int cfd = client.fd();
 
-        bool submitted = pool.submit([cfd, router]() {
+    bool submitted = pool.submit([cfd, router]() {
+        Socket s{cfd};
+        setSocketTimeouts(s.fd(), 5);
 
-            // RAII ownership transferred to worker thread
-            Socket s{cfd};
+        std::string raw;
+        if (!readHttpHeaders(s.fd(), raw)) return;
 
-            std::string raw;
-            if (!readHttpHeaders(s.fd(), raw))
-                return;
+        HttpRequest req;
+        if (!HttpParser::parseRequest(raw, req)) return;
 
-            HttpRequest req;
-            if (!HttpParser::parseRequest(raw, req))
-                return;
+        HttpResponse resp = router->route(req);
+        resp.headers["Connection"] = "close";
 
-            HttpResponse resp = router->route(req);
-            resp.headers["Connection"] = "close";
-
-            writeAll(s.fd(), resp.toString());
-        });
+        writeAll(s.fd(), resp.toString());
+    });
 
         if (!submitted) {
             // Queue full or shutting down — prevent fd leak
